@@ -1,0 +1,141 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Stage-0 checks for Google Pixel 10 Pro XL (mustang, laguna / Tensor G5):
+#   - stage-0 device.conf fails closed in bin/omamobile and tools/install-phone
+#     before touching fastboot (L-44);
+#   - non-Exynos DTB path (google/lga-mustang.dtb), no Exynos earlycon, no
+#     SIMPLEFB_TRIG_CON (L-4), and no BRINGUP_PROBE;
+#   - once unstaged in a scratch copy, UFS_RW and USB_PRODUCT pack cleanly;
+#   - kernel.config enables ARCH_GOOGLE, DW UART, DWC3_GOOGLE, PHY_GOOGLE_USB,
+#     disables ACPI, and keeps DRM_IMAGINATION modular;
+#   - mustang-m1-overlay.dts and overlays/ufs-placeholder.dtso compile and
+#     apply onto a non--@ base DTB via fdtoverlay when dtc is installed.
+set -euo pipefail
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+fail() { printf 'not ok - %s\n' "$1" >&2; exit 1; }
+pass() { printf 'ok - %s\n' "$1"; }
+t=$(mktemp -d); trap '[[ -n ${KEEP:-} ]] || rm -rf "$t"' EXIT
+
+conf=device/mustang/device.conf
+[[ -f $conf ]] || fail "missing $conf"
+
+# --- Fail-closed staging checks (L-44) ---
+mkdir -p "$t/bin" "$t/images"
+printf '#!/bin/sh\necho "$*" >> "%s/fastboot.log"\nexit 0\n' "$t" > "$t/bin/fastboot"
+chmod +x "$t/bin/fastboot"
+for sub in "initramfs" "images" "flash" "push" "initramfs-config $t/etc"; do
+  # shellcheck disable=SC2086
+  if PATH="$t/bin:$PATH" DEVICE=mustang bin/omamobile $sub > "$t/log" 2>&1; then
+    fail "staged mustang must refuse bin/omamobile $sub"
+  fi
+  grep -q 'SOC_IDS is missing' "$t/log" || { cat "$t/log"; fail "bin/omamobile $sub reports missing SOC selector"; }
+done
+if PATH="$t/bin:$PATH" tools/install-phone --device mustang --images "$t/images" --dry-run > "$t/log" 2>&1 </dev/null; then
+  fail "staged mustang must refuse tools/install-phone"
+fi
+grep -q 'SOC_IDS is missing' "$t/log" || { cat "$t/log"; fail "install-phone reports missing SOC selector"; }
+[[ ! -e $t/fastboot.log ]] || fail "fastboot was invoked for a staged descriptor"
+pass "staged mustang descriptor fails closed in bin/omamobile and tools/install-phone before phone access"
+
+# --- Non-Exynos safety invariants (L-4, #18) ---
+grep -qx 'DTB=google/lga-mustang.dtb' "$conf" || fail "DTB must use upstream google/lga-mustang.dtb"
+grep -qx 'DTB_OVERLAYS="ufs-placeholder"' "$conf" || fail "DTB_OVERLAYS must carry ufs-placeholder"
+grep -q '^SIMPLEFB_TRIG_CON=' "$conf" && fail "SIMPLEFB_TRIG_CON must stay unset on VeriSilicon DPU"
+grep -q '^BRINGUP_PROBE=' "$conf" && fail "BRINGUP_PROBE must stay unset on non-Exynos laguna"
+grep -q '^VENDOR_CMDLINE=.*0x10A00000' "$conf" && fail "VENDOR_CMDLINE must not reference Exynos UART 0x10A00000"
+grep -q '^# SOC_COMPATIBLE="b0:0x5:1:0:0 a0:0x5:0:0:0"$' "$conf" \
+  || fail "documented SOC_COMPATIBLE matches upstream lga.dtsi A0/B0"
+pass "non-Exynos DTB path, UART cmdline, and absent Exynos MMIO probes verified"
+
+# --- Unstaged initramfs packing check ---
+R=$t/repo
+mkdir -p "$R/bin" "$R/device/mustang"
+cp bin/omamobile "$R/bin/omamobile"
+# shellcheck disable=SC2016
+printf 'DEVICE="${DEVICE:-mustang}"\nSRC_DIR=%s\n' "$t/nosrc" > "$R/omamobile.conf"
+cp "$conf" "$R/device/mustang/device.conf"
+printf '\nSOC_IDS="b0:0x510"\n' >> "$R/device/mustang/device.conf"
+(cd "$R" && DEVICE=mustang bin/omamobile initramfs-config "$t/etc-mustang") > "$t/log" 2>&1 \
+  || { cat "$t/log"; fail "unstaged mustang initramfs-config validates"; }
+[[ $(cat "$t/etc-mustang/omamobile-ufs-rw") == "boot_b init_boot_b vendor_boot_b vendor_kernel_boot_b dtbo_b userdata" ]] \
+  || fail "mustang UFS_RW packs exact six allowlist entries"
+[[ $(cat "$t/etc-mustang/omamobile-usb-product") == "Pixel 10 Pro XL" ]] \
+  || fail "mustang USB product string packs 'Pixel 10 Pro XL'"
+[[ ! -e $t/etc-mustang/omamobile-simplefb-trig && ! -e $t/etc-mustang/omamobile-bringup-probe ]] \
+  || fail "mustang packs neither simplefb trigger nor Exynos bring-up probe"
+pass "mustang UFS_RW allowlist and USB product string pack cleanly without MMIO triggers"
+
+# --- Kernel config fragment ---
+kcfg=device/mustang/kernel.config
+for line in 'CONFIG_ARCH_GOOGLE=y' \
+            '# CONFIG_ACPI is not set' \
+            'CONFIG_SERIAL_8250=y' \
+            'CONFIG_SERIAL_8250_CONSOLE=y' \
+            'CONFIG_SERIAL_8250_DW=y' \
+            'CONFIG_SERIAL_OF_PLATFORM=y' \
+            'CONFIG_TYPEC=y' \
+            'CONFIG_USB_DWC3_GOOGLE=y' \
+            'CONFIG_PHY_GOOGLE_USB=y' \
+            'CONFIG_DRM_IMAGINATION=m'; do
+  grep -qxF "$line" "$kcfg" || fail "$kcfg missing '$line'"
+done
+pass "device/mustang/kernel.config sets ARCH_GOOGLE, DW UART, DWC3_GOOGLE, PHY_GOOGLE_USB, and ACPI off"
+
+# --- Runbook and notes gates ---
+for doc in device/mustang/NOTES.md device/mustang/BRINGUP-M1.md; do
+  head -n 1 "$doc" | grep -q 'SPDX-License-Identifier: MIT' || fail "$doc has SPDX header"
+done
+for gate in 'Risk:' 'Expect / Pass:' 'Stop condition:' 'Rollback:'; do
+  (( $(grep -cF "$gate" device/mustang/BRINGUP-M1.md) >= 7 )) \
+    || fail "BRINGUP-M1.md carries '$gate' across pre-flight and steps 1..6"
+done
+pass "NOTES.md and BRINGUP-M1.md carry SPDX headers and all step gates"
+
+# --- Device tree compilation & fdtoverlay check ---
+if command -v dtc >/dev/null && command -v fdtoverlay >/dev/null; then
+  dtc -q -@ -I dts -O dtb -o "$t/mustang-m1.dtbo" device/mustang/mustang-m1-overlay.dts \
+    || fail "mustang-m1-overlay.dts compiles"
+  grep -q 'board_id = <0x70506>;' device/mustang/mustang-m1-overlay.dts || fail "board_id matches 0x70506"
+  grep -q 'board_rev = <0x10000>;' device/mustang/mustang-m1-overlay.dts || fail "board_rev matches 0x10000"
+
+  cat > "$t/lga-mustang.dts" <<'EOF'
+/dts-v1/;
+/ {
+	model = "Google Pixel 10 Pro XL";
+	compatible = "google,lga-mustang", "google,lga";
+	board_id = <0x70506>;
+	board_rev = <0x10000>;
+	aliases {
+		serial0 = "/soc@0/serial@db62000";
+	};
+	soc_compatible {
+		A0 {
+			product_id = <0x5>;
+			major = <0x0>;
+			minor = <0x0>;
+			pkg_mode = <0x0>;
+		};
+		B0 {
+			product_id = <0x5>;
+			major = <0x1>;
+			minor = <0x0>;
+			pkg_mode = <0x0>;
+		};
+	};
+};
+EOF
+  # Deliberately compile base DTB without -@ to verify ufs-placeholder.dtso
+  # does not require __symbols__ in the base DTB.
+  dtc -q -I dts -O dtb -o "$t/lga-mustang.dtb" "$t/lga-mustang.dts"
+  dtc -q -@ -I dts -O dtb -o "$t/ufs-placeholder.dtbo" device/mustang/overlays/ufs-placeholder.dtso \
+    || fail "ufs-placeholder.dtso compiles"
+  fdtoverlay -i "$t/lga-mustang.dtb" -o "$t/overlaid.dtb" "$t/ufs-placeholder.dtbo" \
+    || fail "fdtoverlay applies ufs-placeholder.dtbo onto non--@ base DTB"
+  dtc -q -I dtb -O dts "$t/overlaid.dtb" > "$t/overlaid.dts"
+  grep -q 'ufs0 = "/ufs-placeholder";' "$t/overlaid.dts" || fail "overlaid DTB carries /aliases/ufs0"
+  grep -q 'serial0 = "/soc@0/serial@db62000";' "$t/overlaid.dts" || fail "overlaid DTB preserves /aliases/serial0"
+  grep -q 'ufs-placeholder {' "$t/overlaid.dts" || fail "overlaid DTB carries /ufs-placeholder node"
+  pass "mustang-m1-overlay.dts and ufs-placeholder.dtso compile and overlay cleanly"
+else
+  echo "ok - # skip: no dtc/fdtoverlay to compile mustang overlays"
+fi

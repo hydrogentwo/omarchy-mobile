@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Bootloader UFS alias placeholder for Google Tensor G5 (laguna / lga).
+ *
+ * Stock Laguna ABL looks up /aliases/ufs0 in the FDT and aborts boot if either
+ * the property or its target node is missing, before upstream lga.dtsi defines
+ * ufs@3c400000. Uses an explicit root fragment so fdtoverlay succeeds whether
+ * or not the base DTB was compiled with -@, while preserving existing /aliases
+ * entries (serial0). Drop from DTB_OVERLAYS once lga.dtsi defines ufs0.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			aliases {
+				ufs0 = "/ufs-placeholder";
+			};
+
+			ufs-placeholder {
+			};
+		};
+	};
+};

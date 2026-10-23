@@ -186,7 +186,9 @@ cmd_kernel() {
     make ARCH=arm64 LLVM=1 O=$KERNEL_OUT olddefconfig
     make ARCH=arm64 LLVM=1 O=$KERNEL_OUT -j$JOBS Image.gz dtbs modules
     ls -lh $KERNEL_OUT/arch/arm64/boot/Image.gz
-    ls $KERNEL_OUT/arch/arm64/boot/dts/exynos/google/
+    for d in exynos/google google; do
+      [ -d $KERNEL_OUT/arch/arm64/boot/dts/$d ] && ls $KERNEL_OUT/arch/arm64/boot/dts/$d/
+    done
   "
 }
 

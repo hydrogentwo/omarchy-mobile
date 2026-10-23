@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Minimal board DTBO for Google Pixel 10 Pro XL (mustang, laguna / Tensor G5)
+ * milestone M1 bring-up.
+ *
+ * Stock ABL matches the dtbo partition entry on root board_id / board_rev.
+ * Values below match retail MP1.0 from upstream arch/arm64/boot/dts/google/
+ * lga-mustang.dts:
+ *   0x70502  Proto 1.0 / 1.1
+ *   0x70503  EVT 1.0 / 1.1 / Wingboard
+ *   0x70504  DVT 1.0
+ *   0x70505  PVT 1.0
+ *   0x70506  MP 1.0 (board_rev = 0x10000)
+ *
+ * Left empty at stage 0 so ABL applies a valid no-op board overlay without
+ * carrying unverified vendor nodes into mainline. If ABL does not inject a
+ * /chosen/framebuffer node on its own, populate simple-framebuffer here in
+ * BRINGUP-M1.md step 5 using the live carveout read over USB SSH.
+ */
+
+/dts-v1/;
+/plugin/;
+
+/ {
+	board_id = <0x70506>;
+	board_rev = <0x10000>;
+};
